@@ -1,0 +1,10 @@
+.pioenvs
+.piolibdeps
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/
+src/GeneratedBuildInfo.h
+src/defines.h
+data/
+.vscode/*.db
+.vscode/.browse.c_cpp.db*
