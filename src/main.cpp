@@ -6,6 +6,8 @@
 #include <ConfigServer.h>
 #include <ESP8266WebServer.h>
 #include <FS.h>
+#include <TimeLib.h>
+#include <WebTime.h>
 
 #define NUM_LEDS 2
 #define DATA_PIN D5
@@ -15,6 +17,26 @@ ConfigServer cfgServer;
 Config cfg;
 
 CRGB leds[NUM_LEDS];
+bool timerEnabled = false;
+boolean powerEnabled = true;
+
+static WiFiClient client;
+
+// https://arduino.stackexchange.com/questions/1013/how-do-i-split-an-incoming-string
+String getValue(String data, char separator, int index) {
+  int found = 0;
+  int strIndex[] = {0, -1};
+  int maxIndex = data.length() - 1;
+
+  for (int i = 0; i <= maxIndex && found <= index; i++) {
+    if (data.charAt(i) == separator || i == maxIndex) {
+      found++;
+      strIndex[0] = strIndex[1] + 1;
+      strIndex[1] = (i == maxIndex) ? i + 1 : i;
+    }
+  }
+  return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
+}
 
 void setup() {
   Serial.begin(9600);
@@ -26,15 +48,34 @@ void setup() {
   // implement your api actions here
   // UI Button: On/Off
   server.on("/api/power/toggle", HTTP_GET, [&]() {
-    server.send(200, "application/json", "{\"msg\":\"OK\"}");
+    powerEnabled = !powerEnabled;
+    if (powerEnabled) {
+      timerEnabled = false;
+    }
+    String resp = "{\"msg\":\"" +
+                  (powerEnabled ? String("enabled") : String("disabled")) +
+                  "\"}";
+    server.send(200, "application/json", resp);
   });
   // UI Button: Activate Timer
-  server.on("/api/timer/activate", HTTP_GET, [&]() {
-    server.send(200, "application/json", "{\"msg\":\"OK\"}");
+  server.on("/api/timer/toggle", HTTP_GET, [&]() {
+    timerEnabled = !timerEnabled;
+    if (timerEnabled) {
+      powerEnabled = false;
+    }
+    String resp = "{\"msg\":\"" +
+                  (timerEnabled ? String("enabled") : String("disabled")) +
+                  "\"}";
+    server.send(200, "application/json", resp);
   });
+
   // UI Button: Update Time From Internet
   server.on("/api/time/update", HTTP_GET, [&]() {
-    server.send(200, "application/json", "{\"msg\":\"OK\"}");
+    unsigned long unixTime = webUnixTime(client);
+    unixTime += 2 * (3600); // ugly fix for timezone diff
+    setTime(unixTime);
+    server.send(200, "application/json",
+                "{\"msg\":\"" + String(unixTime) + "\"}");
   });
 
   // define WIFI_SSID,WIFI_PASS in defines.h, then add to .gitignore
@@ -66,10 +107,45 @@ void loop(void) {
     uint8_t sat = timerSettingsSaturation;
     uint8_t value = timerSettingsValue;
 
-    for (int i = 0; i < NUM_LEDS; i++) {
-      leds[i] = CHSV(hue, sat, value);
+    if (timeStatus() != timeNotSet) {
+      Serial.println("TIME: ");
+      Serial.print(hour());
+      Serial.print(":");
+      Serial.print(minute());
+      Serial.print(":");
+      Serial.print(second());
     }
 
+    bool timerActive = false;
+    if (timerEnabled && timeStatus() != timeNotSet) {
+      Serial.println("Test:");
+      // turn light on
+      int h = getValue(timerSettingsStartTime, ':', 0).toInt();
+      int m = getValue(timerSettingsStartTime, ':', 1).toInt();
+      Serial.println(h);
+      Serial.println(m);
+      if (hour() >= h && minute() >= m) {
+        timerActive = true;
+        Serial.println("-> on");
+      }
+      // turn it off
+      h = getValue(timerSettingsEndTime, ':', 0).toInt();
+      m = getValue(timerSettingsEndTime, ':', 1).toInt();
+      Serial.println(h);
+      Serial.println(m);
+      if (hour() >= h && minute() >= m) {
+        timerActive = false;
+        Serial.println("-> off");
+      }
+    }
+
+    for (int i = 0; i < NUM_LEDS; i++) {
+      if (timerActive || powerEnabled) {
+        leds[i] = CHSV(hue, sat, value);
+      } else {
+        leds[i] = CHSV(0, 0, 0);
+      }
+    }
     FastLED.show();
 
   } else if (cfg.getConfigVersion(EEPROM) != cfg.getId()) {
